@@ -1,11 +1,11 @@
 #!/bin/bash
-# Удаление Layout Converter:
-#   curl -fsSL https://raw.githubusercontent.com/Egrom92/layout-converter/main/uninstall.sh | bash
+# Удаление Oops:
+#   curl -fsSL https://raw.githubusercontent.com/Egrom92/oops/main/uninstall.sh | bash
 set -u
 osascript -e 'tell application id "local.layoutconverter" to quit' >/dev/null 2>&1
-pkill -x LayoutConverter 2>/dev/null
+pkill -x Oops 2>/dev/null; pkill -x LayoutConverter 2>/dev/null
 sleep 0.5
-for app in "/Applications/Layout Converter.app" "$HOME/Applications/Layout Converter.app"; do
+for app in /Applications/Oops.app "$HOME/Applications/Oops.app" "/Applications/Layout Converter.app" "$HOME/Applications/Layout Converter.app"; do
     if [ -d "$app" ]; then
         open -n -W "$app" --args --unregister-login >/dev/null 2>&1   # убрать из «Объектов входа»
         rm -rf "$app" && echo "Удалено: $app"
@@ -19,4 +19,4 @@ if [ -f "$KC" ]; then
     security delete-keychain "$KC" 2>/dev/null
 fi
 defaults delete local.layoutconverter >/dev/null 2>&1
-echo "✅ Layout Converter удалён. Разрешение можно убрать в Системных настройках → Универсальный доступ."
+echo "✅ Oops удалён. Разрешение можно убрать в Системных настройках → Универсальный доступ."

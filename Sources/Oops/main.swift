@@ -92,7 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func setupMenu() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
-        let img = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Layout Converter")
+        let img = NSImage(systemSymbolName: "keyboard", accessibilityDescription: "Oops")
         img?.isTemplate = true
         item.button?.image = img
         let menu = NSMenu()
@@ -113,7 +113,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let names = KeyboardLayout.enabled().map(\.name)
         layoutsItem.title = AXIsProcessTrusted()
             ? (names.count >= 2 ? "Раскладки: " + names.joined(separator: ", ") : "Включите хотя бы две раскладки")
-            : "Нужен доступ: Универсальный доступ → Layout Converter"
+            : "Нужен доступ: Универсальный доступ → Oops"
         loginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 

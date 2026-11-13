@@ -1,14 +1,14 @@
 #!/bin/bash
-# Установка или обновление Layout Converter одной командой:
-#   curl -fsSL https://raw.githubusercontent.com/Egrom92/layout-converter/main/install.sh | bash
+# Установка или обновление Oops одной командой:
+#   curl -fsSL https://raw.githubusercontent.com/Egrom92/oops/main/install.sh | bash
 # или из скачанной папки:  ./install.sh
 set -euo pipefail
 
-REPO="Egrom92/layout-converter"
+REPO="Egrom92/oops"
 say() { printf '\n\033[1m▶︎ %s\033[0m\n' "$*"; }
 die() { printf '\n❌ %s\n' "$*" >&2; exit 1; }
 
-[ "$(uname -s)" = Darwin ] || die "Layout Converter работает только на macOS."
+[ "$(uname -s)" = Darwin ] || die "Oops работает только на macOS."
 ver=$(sw_vers -productVersion)
 [ "${ver%%.*}" -ge 13 ] || die "Нужна macOS 13 Ventura или новее (у вас $ver)."
 
@@ -22,20 +22,20 @@ fi
 
 # --- исходники: из этой папки или свежие с GitHub ---
 self="${BASH_SOURCE[0]:-}"
-if [ -n "$self" ] && [ -f "$(dirname "$self")/Package.swift" ] && [ -d "$(dirname "$self")/Sources/LayoutConverter" ]; then
+if [ -n "$self" ] && [ -f "$(dirname "$self")/Package.swift" ] && [ -d "$(dirname "$self")/Sources/Oops" ]; then
     SRC="$(cd "$(dirname "$self")" && pwd)"
 else
-    say "Скачиваю Layout Converter с GitHub"
-    TMP=$(mktemp -d "${TMPDIR:-/tmp}/layoutconverter.XXXXXX")
+    say "Скачиваю Oops с GitHub"
+    TMP=$(mktemp -d "${TMPDIR:-/tmp}/oops.XXXXXX")
     trap 'rm -rf "$TMP"' EXIT
     curl -fsSL "https://github.com/$REPO/archive/refs/heads/main.tar.gz" | tar -xz -C "$TMP" \
         || die "Не удалось скачать https://github.com/$REPO. Проверьте интернет."
-    SRC="$TMP/layout-converter-main"
+    SRC="$TMP/oops-main"
 fi
 cd "$SRC"
 
 say "Собираю (первый раз 1–2 минуты)"
-LOG="${TMPDIR:-/tmp}/layoutconverter-build.log"
+LOG="${TMPDIR:-/tmp}/oops-build.log"
 if ! ./scripts/build.sh >"$LOG" 2>&1; then
     tail -30 "$LOG" >&2
     die "Сборка не удалась. Полный журнал: $LOG"
@@ -60,20 +60,29 @@ fi
 # --- установка ---
 DEST=/Applications
 [ -w "$DEST" ] || { DEST="$HOME/Applications"; mkdir -p "$DEST"; }
-say "Ставлю в $DEST/Layout Converter.app"
+say "Ставлю в $DEST/Oops.app"
 osascript -e 'tell application id "local.layoutconverter" to quit' >/dev/null 2>&1 || true
-pkill -x LayoutConverter 2>/dev/null || true
+pkill -x Oops 2>/dev/null || true
+# Под старым именем (Layout Converter): убрать из «Объектов входа» и удалить; новое имя включит автозапуск заново.
+for old in "/Applications/Layout Converter.app" "$HOME/Applications/Layout Converter.app"; do
+    if [ -d "$old" ]; then
+        pkill -x LayoutConverter 2>/dev/null || true
+        open -n -W "$old" --args --unregister-login >/dev/null 2>&1 || true
+        rm -rf "$old"
+        defaults delete local.layoutconverter loginItemConfigured >/dev/null 2>&1 || true
+    fi
+done
 sleep 0.5
-rm -rf "$DEST/Layout Converter.app"
-ditto "build/Layout Converter.app" "$DEST/Layout Converter.app"
-open "$DEST/Layout Converter.app"
+rm -rf "$DEST/Oops.app"
+ditto "build/Oops.app" "$DEST/Oops.app"
+open "$DEST/Oops.app"
 
 cat <<'DONE'
 
 ✅ Готово: значок клавиатуры в строке меню.
 
 Один раз выдайте доступ (macOS сама предложит):
-  Системные настройки → Конфиденциальность и безопасность → Универсальный доступ → Layout Converter.
+  Системные настройки → Конфиденциальность и безопасность → Универсальный доступ → Oops.
 
 Как пользоваться: напечатали не в той раскладке («ghbdtn») — нажмите и отпустите Ctrl+Option.
 Есть выделение — меняется оно, нет — последнее слово. Раскладка переключится сама.
