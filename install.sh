@@ -1,70 +1,82 @@
 #!/bin/bash
-# Установка конвертера раскладки:
+# Установка или обновление Layout Converter одной командой:
 #   curl -fsSL https://raw.githubusercontent.com/Egrom92/layout-converter/main/install.sh | bash
 # или из скачанной папки:  ./install.sh
 set -euo pipefail
 
 REPO="Egrom92/layout-converter"
-HS_DIR="$HOME/.hammerspoon"
-MODULE="$HS_DIR/layout_converter.lua"
-INIT="$HS_DIR/init.lua"
 say() { printf '\n\033[1m▶︎ %s\033[0m\n' "$*"; }
 die() { printf '\n❌ %s\n' "$*" >&2; exit 1; }
 
-[ "$(uname -s)" = Darwin ] || die "Конвертер работает только на macOS."
+[ "$(uname -s)" = Darwin ] || die "Layout Converter работает только на macOS."
+ver=$(sw_vers -productVersion)
+[ "${ver%%.*}" -ge 13 ] || die "Нужна macOS 13 Ventura или новее (у вас $ver)."
 
-# --- 1. Hammerspoon ------------------------------------------------------------
-if [ ! -d /Applications/Hammerspoon.app ] && [ ! -d "$HOME/Applications/Hammerspoon.app" ]; then
-    if command -v brew >/dev/null 2>&1; then
-        say "Ставлю Hammerspoon (через Homebrew)"
-        brew install --cask hammerspoon
-    else
-        die "Нужен Hammerspoon: скачайте его с https://www.hammerspoon.org, перенесите в «Программы» и запустите эту команду ещё раз."
-    fi
+if ! xcode-select -p >/dev/null 2>&1 || ! xcrun --find swift >/dev/null 2>&1; then
+    say "Нужны бесплатные инструменты разработчика Apple (Command Line Tools)"
+    echo "Сейчас откроется окно установки: нажмите «Установить», дождитесь окончания"
+    echo "(5–15 минут) и запустите эту же команду ещё раз."
+    xcode-select --install 2>/dev/null || true
+    exit 1
 fi
 
-# --- 2. Скрипт ------------------------------------------------------------------
-mkdir -p "$HS_DIR"
+# --- исходники: из этой папки или свежие с GitHub ---
 self="${BASH_SOURCE[0]:-}"
-if [ -n "$self" ] && [ -f "$(dirname "$self")/layout_converter.lua" ]; then
-    cp "$(dirname "$self")/layout_converter.lua" "$MODULE"
+if [ -n "$self" ] && [ -f "$(dirname "$self")/Package.swift" ] && [ -d "$(dirname "$self")/Sources/LayoutConverter" ]; then
+    SRC="$(cd "$(dirname "$self")" && pwd)"
 else
-    curl -fsSL "https://raw.githubusercontent.com/$REPO/main/layout_converter.lua" -o "$MODULE" \
-        || die "Не удалось скачать layout_converter.lua. Проверьте интернет."
+    say "Скачиваю Layout Converter с GitHub"
+    TMP=$(mktemp -d "${TMPDIR:-/tmp}/layoutconverter.XXXXXX")
+    trap 'rm -rf "$TMP"' EXIT
+    curl -fsSL "https://github.com/$REPO/archive/refs/heads/main.tar.gz" | tar -xz -C "$TMP" \
+        || die "Не удалось скачать https://github.com/$REPO. Проверьте интернет."
+    SRC="$TMP/layout-converter-main"
 fi
-say "Скрипт: $MODULE"
+cd "$SRC"
 
-# --- 3. Подключить в init.lua, не затирая ваши настройки -------------------------
-LINE='require("layout_converter")   -- конвертер раскладки: Ctrl+Option'
-if [ ! -f "$INIT" ]; then
-    printf '%s\n' "$LINE" > "$INIT"
-elif grep -q 'require("layout_converter")' "$INIT"; then
-    : # уже подключён
-elif grep -q 'Конвертер раскладки (замена Punto Switcher)' "$INIT"; then
-    # старая версия, вставленная целиком в init.lua: заменяем, копию оставляем рядом
-    cp "$INIT" "$INIT.bak"
-    printf '%s\n' "$LINE" > "$INIT"
-    say "Старая копия конвертера в init.lua заменена подключением; прежний файл: $INIT.bak"
-else
-    printf '\n%s\n' "$LINE" >> "$INIT"
+say "Собираю (первый раз 1–2 минуты)"
+LOG="${TMPDIR:-/tmp}/layoutconverter-build.log"
+if ! ./scripts/build.sh >"$LOG" 2>&1; then
+    tail -30 "$LOG" >&2
+    die "Сборка не удалась. Полный журнал: $LOG"
 fi
 
-# --- 4. Перезапустить Hammerspoon с новым конфигом -------------------------------
-if [ -z "${LAYOUT_CONVERTER_NO_LAUNCH:-}" ]; then
+# --- старая версия на Hammerspoon: выключить, чтобы Ctrl+Option не срабатывал дважды ---
+HS="$HOME/.hammerspoon"
+if [ -f "$HS/init.lua" ] && grep -q 'require("layout_converter")\|Конвертер раскладки (замена Punto Switcher)' "$HS/init.lua"; then
+    if grep -q 'Конвертер раскладки (замена Punto Switcher)' "$HS/init.lua"; then
+        mv "$HS/init.lua" "$HS/init.lua.bak"   # это был только конвертер
+    else
+        grep -v 'require("layout_converter")' "$HS/init.lua" > "$HS/init.lua.tmp" && mv "$HS/init.lua.tmp" "$HS/init.lua"
+    fi
+    rm -f "$HS/layout_converter.lua"
     if pgrep -xq Hammerspoon; then
         osascript -e 'tell application "Hammerspoon" to quit' >/dev/null 2>&1 || true
-        sleep 1
+        [ -s "$HS/init.lua" ] && { sleep 1; open -a Hammerspoon; }
     fi
-    open -a Hammerspoon
+    say "Конвертер в Hammerspoon выключен (копия: $HS/init.lua.bak, если был только он). Hammerspoon больше не нужен."
 fi
+
+# --- установка ---
+DEST=/Applications
+[ -w "$DEST" ] || { DEST="$HOME/Applications"; mkdir -p "$DEST"; }
+say "Ставлю в $DEST/Layout Converter.app"
+osascript -e 'tell application id "local.layoutconverter" to quit' >/dev/null 2>&1 || true
+pkill -x LayoutConverter 2>/dev/null || true
+sleep 0.5
+rm -rf "$DEST/Layout Converter.app"
+ditto "build/Layout Converter.app" "$DEST/Layout Converter.app"
+open "$DEST/Layout Converter.app"
 
 cat <<'DONE'
 
-✅ Готово. Вверху экрана мелькнёт «Конвертер раскладки: Ctrl+Option».
+✅ Готово: значок клавиатуры в строке меню.
 
-Один раз выдайте Hammerspoon доступ:
-  Системные настройки → Конфиденциальность и безопасность → Универсальный доступ → Hammerspoon.
+Один раз выдайте доступ (macOS сама предложит):
+  Системные настройки → Конфиденциальность и безопасность → Универсальный доступ → Layout Converter.
 
 Как пользоваться: напечатали не в той раскладке («ghbdtn») — нажмите и отпустите Ctrl+Option.
-Есть выделение — меняется оно, нет — последнее слово перед курсором. Раскладка переключится сама.
+Есть выделение — меняется оно, нет — последнее слово. Раскладка переключится сама.
+Работает с любыми включёнными раскладками: английской, русской, эстонской, латышской, финской и другими.
+Обновить — запустить эту же команду ещё раз.
 DONE
