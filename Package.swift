@@ -7,7 +7,7 @@ let package = Package(
     targets: [
         .target(name: "Layouts", linkerSettings: [.linkedFramework("Carbon")]),
         .executableTarget(name: "Oops", dependencies: ["Layouts"],
-                          linkerSettings: [.linkedFramework("ServiceManagement")]),
+                          linkerSettings: [.linkedFramework("ServiceManagement"), .linkedFramework("Carbon")]),
         .executableTarget(name: "LayoutCheck", dependencies: ["Layouts"]),
     ]
 )

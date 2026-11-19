@@ -1,69 +1,49 @@
 import AppKit
+import Carbon.HIToolbox
 import Layouts
 import ServiceManagement
 
-/// Which modifier keys to tap. Ctrl+Option by default; the user can pick another in the menu.
-enum Trigger: String, CaseIterable {
-    case ctrlOption, ctrlShift, optionShift, ctrlCmd, optionCmd, ctrlOptionShift
-
-    var flags: NSEvent.ModifierFlags {
-        switch self {
-        case .ctrlOption: [.control, .option]
-        case .ctrlShift: [.control, .shift]
-        case .optionShift: [.option, .shift]
-        case .ctrlCmd: [.control, .command]
-        case .optionCmd: [.option, .command]
-        case .ctrlOptionShift: [.control, .option, .shift]
-        }
-    }
-
-    var title: String {
-        switch self {
-        case .ctrlOption: "Ctrl+Option"
-        case .ctrlShift: "Ctrl+Shift"
-        case .optionShift: "Option+Shift"
-        case .ctrlCmd: "Ctrl+Cmd"
-        case .optionCmd: "Option+Cmd"
-        case .ctrlOptionShift: "Ctrl+Option+Shift"
-        }
-    }
-
-    static var current: Trigger {
-        get { Trigger(rawValue: UserDefaults.standard.string(forKey: "trigger") ?? "") ?? .ctrlOption }
-        set { UserDefaults.standard.set(newValue.rawValue, forKey: "trigger") }
-    }
-}
-
-/// Tap and release the chosen modifiers (Ctrl+Option by default; no other key in between, under a second):
-/// the text is converted. Only modifier changes are watched; ordinary keys only while the modifiers are held,
-/// to tell the tap apart from a shortcut like Ctrl+Option+something.
+/// Listens for the chosen trigger (see Trigger). A tap of modifiers is seen by watching modifier changes only;
+/// ordinary keys are watched just while those modifiers are held, to tell the tap apart from Ctrl+Option+something.
+/// A key combination is a Carbon hotkey; the conversion then waits for the modifiers to be released.
 @MainActor
 final class Hotkey {
     private var flagsMonitor: Any?
     private var keyMonitor: Any?
     private var armedAt: Date?
+    private var carbonRef: EventHotKeyRef?
+    private var carbonHandler: EventHandlerRef?
     private let action: () -> Void
+    private var trigger = Trigger.current
 
     init(action: @escaping () -> Void) { self.action = action }
 
-    func start() {
+    /// Starts listening for Trigger.current. Returns false if a key combination is taken by another app.
+    @discardableResult
+    func start() -> Bool {
         stop()
+        trigger = Trigger.current
+        if let code = trigger.keyCode { return registerCarbon(code) }
         flagsMonitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged) { [weak self] e in
             MainActor.assumeIsolated { self?.flagsChanged(e.modifierFlags) }
         }
+        return true
     }
 
     func stop() {
         disarm()
         if let m = flagsMonitor { NSEvent.removeMonitor(m) }
         flagsMonitor = nil
+        if let r = carbonRef { UnregisterEventHotKey(r) }
+        carbonRef = nil
     }
 
     private func flagsChanged(_ flags: NSEvent.ModifierFlags) {
-        let f = flags.intersection([.control, .option, .shift, .command, .function])
-        let want = Trigger.current.flags
+        let f = flags.intersection(Trigger.modMask.union(.function))
+        let want = trigger.mods
         if !f.subtracting(want).isEmpty { disarm(); return }   // another modifier joined in: not our tap
         if f == want {
+            if trigger.side != 0 && flags.rawValue & trigger.side == 0 { disarm(); return }   // the other Cmd/Shift…
             guard armedAt == nil else { return }
             armedAt = Date()
             keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) {
@@ -81,6 +61,35 @@ final class Hotkey {
         if let m = keyMonitor { NSEvent.removeMonitor(m) }
         keyMonitor = nil
     }
+
+    private func registerCarbon(_ code: Int) -> Bool {
+        if carbonHandler == nil {
+            var spec = EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed))
+            let me = Unmanaged.passUnretained(self).toOpaque()
+            InstallEventHandler(GetApplicationEventTarget(), { _, _, ctx in
+                guard let ctx else { return noErr }
+                let hk = Unmanaged<Hotkey>.fromOpaque(ctx).takeUnretainedValue()
+                DispatchQueue.main.async { MainActor.assumeIsolated { hk.firedCarbon() } }
+                return noErr
+            }, 1, &spec, me, &carbonHandler)
+        }
+        var ref: EventHotKeyRef?
+        let st = RegisterEventHotKey(UInt32(code), trigger.carbonModifiers, EventHotKeyID(signature: 0x4F4F5053 /* OOPS */, id: 1),
+                                     GetApplicationEventTarget(), 0, &ref)
+        guard st == noErr, let ref else { return false }
+        carbonRef = ref
+        return true
+    }
+
+    /// The combination was pressed: wait (up to 1.5 s) until the keys are let go, so they don't mix into ⌘C / ⌘V.
+    private func firedCarbon() {
+        let t0 = Date()
+        func check() {
+            if NSEvent.modifierFlags.intersection(Trigger.modMask).isEmpty || Date().timeIntervalSince(t0) > 1.5 { action(); return }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) { MainActor.assumeIsolated { check() } }
+        }
+        check()
+    }
 }
 
 @MainActor
@@ -94,7 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var layoutsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var loginItem: NSMenuItem?
     private var hintItem: NSMenuItem?
-    private var triggerItems: [Trigger: NSMenuItem] = [:]
+    private var triggerItems: [(Trigger, NSMenuItem)] = []
+    private let customItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let recorder = TriggerRecorder()
     private var waitingForAccess: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -136,13 +147,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         hintItem = hint
         let trigger = NSMenuItem(title: "Сочетание клавиш", action: nil, keyEquivalent: "")
         let triggerMenu = NSMenu()
-        for t in Trigger.allCases {
+        for (n, t) in Trigger.presets.enumerated() {
             let i = NSMenuItem(title: t.title, action: #selector(pickTrigger(_:)), keyEquivalent: "")
             i.target = self
-            i.representedObject = t.rawValue
-            triggerItems[t] = i
+            i.tag = n
+            triggerItems.append((t, i))
             triggerMenu.addItem(i)
         }
+        customItem.isEnabled = false
+        triggerMenu.addItem(.separator())
+        triggerMenu.addItem(customItem)
+        let record = NSMenuItem(title: "Своё сочетание…", action: #selector(recordTrigger), keyEquivalent: "")
+        record.target = self
+        triggerMenu.addItem(record)
         trigger.submenu = triggerMenu
         layoutsItem.isEnabled = false
         let login = NSMenuItem(title: "Запускать при входе в систему", action: #selector(toggleLogin), keyEquivalent: "")
@@ -156,7 +173,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         hintItem?.title = "\(Trigger.current.title) — исправить раскладку"
-        for (t, i) in triggerItems { i.state = t == Trigger.current ? .on : .off }
+        let cur = Trigger.current
+        for (t, i) in triggerItems { i.state = t == cur ? .on : .off }
+        let isCustom = !Trigger.presets.contains(cur)
+        customItem.isHidden = !isCustom
+        customItem.title = cur.title
+        customItem.state = isCustom ? .on : .off
         let names = KeyboardLayout.enabled().map(\.name)
         layoutsItem.title = AXIsProcessTrusted()
             ? (names.count >= 2 ? "Раскладки: " + names.joined(separator: ", ") : "Включите хотя бы две раскладки")
@@ -164,9 +186,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         loginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
-    @objc private func pickTrigger(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let t = Trigger(rawValue: raw) else { return }
-        Trigger.current = t   // read on every key change, so it works at once
+    @objc private func pickTrigger(_ sender: NSMenuItem) { use(Trigger.presets[sender.tag]) }
+
+    @objc private func recordTrigger() {
+        hotkey.stop()   // so the keys pressed while recording don't convert anything
+        recorder.record { [weak self] t in
+            guard let self else { return }
+            if let t { self.use(t) } else if AXIsProcessTrusted() { self.hotkey.start() }
+        }
+    }
+
+    private func use(_ t: Trigger) {
+        let old = Trigger.current
+        Trigger.current = t
+        guard AXIsProcessTrusted() else { return }   // starts once access is granted
+        if !hotkey.start() {
+            Trigger.current = old
+            hotkey.start()
+            let a = NSAlert()
+            a.messageText = "\(t.title) уже занято"
+            a.informativeText = "Это сочетание перехватывает другая программа или macOS. Выберите другое."
+            NSApp.activate(ignoringOtherApps: true)
+            a.runModal()
+        }
     }
 
     @objc private func toggleLogin() {
