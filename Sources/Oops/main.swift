@@ -2,9 +2,41 @@ import AppKit
 import Layouts
 import ServiceManagement
 
-/// Tap and release Ctrl+Option (no other key in between, under a second): the text is converted.
-/// Only modifier changes are watched; ordinary keys only while Ctrl+Option are held, to tell
-/// the shortcut apart from Ctrl+Option+something.
+/// Which modifier keys to tap. Ctrl+Option by default; the user can pick another in the menu.
+enum Trigger: String, CaseIterable {
+    case ctrlOption, ctrlShift, optionShift, ctrlCmd, optionCmd, ctrlOptionShift
+
+    var flags: NSEvent.ModifierFlags {
+        switch self {
+        case .ctrlOption: [.control, .option]
+        case .ctrlShift: [.control, .shift]
+        case .optionShift: [.option, .shift]
+        case .ctrlCmd: [.control, .command]
+        case .optionCmd: [.option, .command]
+        case .ctrlOptionShift: [.control, .option, .shift]
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .ctrlOption: "Ctrl+Option"
+        case .ctrlShift: "Ctrl+Shift"
+        case .optionShift: "Option+Shift"
+        case .ctrlCmd: "Ctrl+Cmd"
+        case .optionCmd: "Option+Cmd"
+        case .ctrlOptionShift: "Ctrl+Option+Shift"
+        }
+    }
+
+    static var current: Trigger {
+        get { Trigger(rawValue: UserDefaults.standard.string(forKey: "trigger") ?? "") ?? .ctrlOption }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "trigger") }
+    }
+}
+
+/// Tap and release the chosen modifiers (Ctrl+Option by default; no other key in between, under a second):
+/// the text is converted. Only modifier changes are watched; ordinary keys only while the modifiers are held,
+/// to tell the tap apart from a shortcut like Ctrl+Option+something.
 @MainActor
 final class Hotkey {
     private var flagsMonitor: Any?
@@ -28,16 +60,16 @@ final class Hotkey {
     }
 
     private func flagsChanged(_ flags: NSEvent.ModifierFlags) {
-        let f = flags.intersection(.deviceIndependentFlagsMask)
-        let ctrl = f.contains(.control), alt = f.contains(.option)
-        if f.contains(.command) || f.contains(.shift) || f.contains(.function) { disarm(); return }
-        if ctrl && alt {
+        let f = flags.intersection([.control, .option, .shift, .command, .function])
+        let want = Trigger.current.flags
+        if !f.subtracting(want).isEmpty { disarm(); return }   // another modifier joined in: not our tap
+        if f == want {
             guard armedAt == nil else { return }
             armedAt = Date()
             keyMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]) {
                 [weak self] _ in MainActor.assumeIsolated { self?.disarm() }
             }
-        } else if !ctrl && !alt {
+        } else if f.isEmpty {
             let tapped = armedAt.map { Date().timeIntervalSince($0) < 1 } ?? false
             disarm()
             if tapped { action() }
@@ -61,6 +93,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var layoutsItem = NSMenuItem(title: "", action: nil, keyEquivalent: "")
     private var loginItem: NSMenuItem?
+    private var hintItem: NSMenuItem?
+    private var triggerItems: [Trigger: NSMenuItem] = [:]
     private var waitingForAccess: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -97,24 +131,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.button?.image = img
         let menu = NSMenu()
         menu.delegate = self
-        let hint = NSMenuItem(title: "Ctrl+Option — исправить раскладку", action: nil, keyEquivalent: "")
+        let hint = NSMenuItem(title: "", action: nil, keyEquivalent: "")
         hint.isEnabled = false
+        hintItem = hint
+        let trigger = NSMenuItem(title: "Сочетание клавиш", action: nil, keyEquivalent: "")
+        let triggerMenu = NSMenu()
+        for t in Trigger.allCases {
+            let i = NSMenuItem(title: t.title, action: #selector(pickTrigger(_:)), keyEquivalent: "")
+            i.target = self
+            i.representedObject = t.rawValue
+            triggerItems[t] = i
+            triggerMenu.addItem(i)
+        }
+        trigger.submenu = triggerMenu
         layoutsItem.isEnabled = false
         let login = NSMenuItem(title: "Запускать при входе в систему", action: #selector(toggleLogin), keyEquivalent: "")
         login.target = self
         loginItem = login
-        menu.items = [hint, layoutsItem, .separator(), login, .separator(),
+        menu.items = [hint, layoutsItem, .separator(), trigger, login, .separator(),
                       NSMenuItem(title: "Выйти", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")]
         item.menu = menu
         statusItem = item
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        hintItem?.title = "\(Trigger.current.title) — исправить раскладку"
+        for (t, i) in triggerItems { i.state = t == Trigger.current ? .on : .off }
         let names = KeyboardLayout.enabled().map(\.name)
         layoutsItem.title = AXIsProcessTrusted()
             ? (names.count >= 2 ? "Раскладки: " + names.joined(separator: ", ") : "Включите хотя бы две раскладки")
             : "Нужен доступ: Универсальный доступ → Oops"
         loginItem?.state = SMAppService.mainApp.status == .enabled ? .on : .off
+    }
+
+    @objc private func pickTrigger(_ sender: NSMenuItem) {
+        guard let raw = sender.representedObject as? String, let t = Trigger(rawValue: raw) else { return }
+        Trigger.current = t   // read on every key change, so it works at once
     }
 
     @objc private func toggleLogin() {
