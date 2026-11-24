@@ -8,9 +8,10 @@ IDENTITY="Layout Converter Local Signing"   # the old name on purpose: same sign
 
 swift build -c release --product Oops
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp .build/release/Oops "$APP/Contents/MacOS/Oops"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 if ! security find-identity -p codesigning | grep -q "$IDENTITY"; then
     ./scripts/setup-signing.sh
