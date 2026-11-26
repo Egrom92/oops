@@ -48,6 +48,15 @@ curl -fsSL https://raw.githubusercontent.com/Egrom92/oops/main/uninstall.sh | ba
 - Работает там, где есть ⌘C / ⌘V и обычное выделение текста.
 - Конвертирует между раскладками разных алфавитов (кириллица ↔ латиница). Между двумя латинскими (U.S. ↔ эстонская) — только если других не включено.
 
+## Другие программы
+
+- [2pic](https://eglibyte.ee/ru/2pic.html) — скриншоты и видео с экрана
+- [Peekaboo](https://eglibyte.ee/ru/peekaboo.html) — прячет лишние значки в строке меню
+- [Magpie](https://eglibyte.ee/ru/magpie.html) — помнит всё, что вы копировали
+- [Lark](https://eglibyte.ee/ru/lark.html) — звук, микрофон и пауза для всего, что играет
+
+Все программы: [eglibyte.ee/ru/tools.html](https://eglibyte.ee/ru/tools.html)
+
 ## Лицензия
 
 MIT — см. [LICENSE](LICENSE).
